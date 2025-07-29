@@ -170,26 +170,41 @@ void XPlaneUdp::addDataref (const string &dataRef, const int32_t freq, const int
  * @return 最新值
  */
 float XPlaneUdp::getDataref (const std::string &dataRef, float defaultValue, int index) {
+    int32_t datarefIndex = datarefName2Id(dataRef, index);
+    if (datarefIndex == -1)
+        return defaultValue;
+    return getDataref(datarefIndex, defaultValue);
+}
+
+/**
+ * @brief 获取某个 dataref 最新值
+ * @param id dataref 索引
+ * @param defaultValue 不存在时的默认值
+ * @return 最新值
+ */
+float XPlaneUdp::getDataref (const int32_t id, const float defaultValue) {
+    lock_guard<mutex> guard(latestMutex);
+    const auto it = latestDataref.find(id);
+    if (it == latestDataref.end())
+        return defaultValue;
+    return it->second;
+}
+
+/**
+ * @brief 通过 dataref 名称索引唯一 id
+ * @param dataRef dataref 名称
+ * @param index 目标为数组时的索引
+ * @return 唯一 id, 未找到返回 -1
+ */
+int32_t XPlaneUdp::datarefName2Id (const std::string &dataRef, int index) {
     string combine{};
     if (index != -1)
         combine = dataRef + '[' + to_string(index) + ']';
     else
         combine = dataRef;
-    int datarefIndex{};
-    {
-        shared_lock<shared_mutex> lock(datarefMapMutex);
-        const auto it = dataref.right.find(combine);
-        if (it == dataref.right.end())
-            return defaultValue;
-        datarefIndex = it->get_left();
-    }
-    {
-        lock_guard<mutex> guard(latestMutex);
-        const auto it = latestDataref.find(datarefIndex);
-        if (it == latestDataref.end())
-            return defaultValue;
-        return it->second;
-    }
+    shared_lock<shared_mutex> lock(datarefMapMutex);
+    const auto it = dataref.right.find(combine);
+    if (it == dataref.right.end())
+        return -1;
+    return it->get_left();
 }
-float XPlaneUdp::getDataref (int32_t id, float defaultValue) {}
-float XPlaneUdp::datarefName2Id (const std::string &dataRef, int index) {}

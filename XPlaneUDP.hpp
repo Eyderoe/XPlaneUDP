@@ -67,7 +67,7 @@ class XPlaneUdp {
         void addDataref (const std::string &dataRef, int32_t freq = 1, int index = -1);
         float getDataref (const std::string &dataRef, float defaultValue = 0, int index = -1);
         float getDataref (int32_t id, float defaultValue = 0);
-        float datarefName2Id (const std::string &dataRef, int index = -1);
+        int32_t datarefName2Id (const std::string &dataRef, int index = -1);
     private:
         int32_t datarefIndex{0}; // dataref 索引
         std::map<int, float> latestDataref; // 最新 dataref 数据

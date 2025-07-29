@@ -2,14 +2,15 @@ XPlane UDP
 ===============================
 XPlane12 & MinGW32 10.3 下通过测试
 
-### 备注
+异步操作且线程安全
 
-- 发送格式：消息类型char[4] + 空字符char[0] + 数据结构
-- 支持数据类型：CHR 字符、INT 4字节整数、FLT 4字节浮点、DOB 4字节双精度
+### 支持
+
+- Dataref 接收
 
 ### 参考
 
-- **github.com/charlylima/XPlaneUDP** 参考了部分代码
+- **charlylima/XPlaneUDP** 部分代码
 
 *  "X-Plane 12\Resources\plugins\Commands.txt"
 *  "X-Plane 12\Resources\plugins\DataRefs.txt"
