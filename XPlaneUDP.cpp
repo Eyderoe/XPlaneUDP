@@ -10,9 +10,10 @@ using namespace std;
 
 constexpr int headerLength{5}; // 指令头部长度 4字母+1空
 const static string datarefHead{'R', 'R', 'E', 'F', '\x00'};
+const static string beconHead{'B', 'E', 'C', 'N', '\x00'};
 
 
-XPlaneUdp::XPlaneUdp (Asio::io_context &io_context): io_context(io_context), localSocket(io_context), remoteEndpoint() {
+XPlaneUdp::XPlaneUdp (Asio::io_context &io_context): localSocket(io_context), strand_(io_context.get_executor()) {
     autoUdpFind();
     Ip::udp::endpoint local(Ip::udp::v4(), 0);
     localSocket.open(local.protocol());
@@ -43,7 +44,7 @@ void XPlaneUdp::autoUdpFind () {
         multicastEndpoint = Ip::udp::endpoint(Ip::make_address(multiCastGroup), multiCastPort);
     multicastSocket.bind(multicastEndpoint);
     Ip::address_v4 multicast_address = Ip::make_address_v4(multiCastGroup);
-    multicastSocket.set_option(Asio::ip::multicast::join_group(multicast_address));
+    multicastSocket.set_option(Ip::multicast::join_group(multicast_address));
     // 接收数据
     udpBuffer_t buffer{};
     Ip::udp::endpoint senderEndpoint;
@@ -51,8 +52,9 @@ void XPlaneUdp::autoUdpFind () {
     try {
         bytesReceived = receiveData(multicastSocket, buffer, senderEndpoint, 3000);
     } catch (const XPlaneTimeout &e) {
-        throw e;
+        throw XPlaneIpNotFound();
     }
+
     cout << "XPlane Beacon: ";
     for (size_t i = 0; i < bytesReceived; i++)
         cout << hex << setw(2) << setfill('0') << (static_cast<unsigned int>(buffer[i]) & 0xff);
@@ -67,7 +69,7 @@ void XPlaneUdp::autoUdpFind () {
      * 端口 ushort16 (49000)
      * 计算机名称 char8[N] (LAPTOP-NO0CK753)
      */
-    if ((bytesReceived < 5 + 16) || (string_view{buffer.data(), 5} != string{'B', 'E', 'C', 'N', '\x00'})) { // 非xp数据
+    if ((bytesReceived < 5 + 16) || (string_view{buffer.data(), 5} != beconHead)) { // 非xp数据
         cerr << "Unknown packet from " << senderEndpoint << endl;
         cout << buffer.size() << " bytes" << endl;
         for (const auto &byte : buffer)
@@ -106,10 +108,15 @@ void XPlaneUdp::receiveUdpData () {
                 continue;
             }
         }
-        Sys::error_code ec;
-        size_t bytesReceived = 0;
         Ip::udp::endpoint sender{};
-        bytesReceived = localSocket.receive_from(Asio::buffer(recvBuffer), sender, 0, ec);
+        size_t bytesReceived{};
+        try {
+            bytesReceived = receiveData(localSocket, recvBuffer, sender, 2000);
+        } catch (const XPlaneTimeout &e) {
+            if (shared_lock<shared_mutex> lock(datarefMapMutex); dataref.empty())
+                continue;
+            throw e;
+        }
         if (bytesReceived > headerLength) {
             if (equal(datarefHead.begin(), datarefHead.begin() + 4, recvBuffer.begin())) // 文档有误 xp12实际返回 RREF,{...},...
                 receiveDataref(recvBuffer, bytesReceived);
@@ -152,7 +159,7 @@ void XPlaneUdp::addDataref (const string &dataRef, const int32_t freq, const int
     strIndex = dataRef + strIndex;
     pack(buffer, 0, datarefHead, freq, datarefIndex, strIndex);
     datarefIndex++;
-    sendUdpData(buffer);
+    sendUdpData(move(buffer));
 }
 
 /**
@@ -184,3 +191,5 @@ float XPlaneUdp::getDataref (const std::string &dataRef, float defaultValue, int
         return it->second;
     }
 }
+float XPlaneUdp::getDataref (int32_t id, float defaultValue) {}
+float XPlaneUdp::datarefName2Id (const std::string &dataRef, int index) {}

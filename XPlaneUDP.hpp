@@ -66,30 +66,36 @@ class XPlaneUdp {
         ~XPlaneUdp ();
         void addDataref (const std::string &dataRef, int32_t freq = 1, int index = -1);
         float getDataref (const std::string &dataRef, float defaultValue = 0, int index = -1);
+        float getDataref (int32_t id, float defaultValue = 0);
+        float datarefName2Id (const std::string &dataRef, int index = -1);
     private:
         int32_t datarefIndex{0}; // dataref 索引
         std::map<int, float> latestDataref; // 最新 dataref 数据
         boost::bimap<int32_t, std::string> dataref; // 双映射 dataref <索引,名称>
-        Asio::io_context &io_context; // 全局 io_context
         Ip::udp::socket localSocket; // 绑定了本地地址的 socket
         Ip::udp::endpoint remoteEndpoint; // xp 地址
         std::atomic<bool> running{false}; // 线程运行状态
         std::mutex latestMutex; // dataref 最新数据读写锁
         std::shared_mutex datarefMapMutex; // dataref 映射读写锁
+        Asio::strand<Asio::io_context::executor_type> strand_; // udp 异步操作
 
         void autoUdpFind ();
         void receiveUdpData ();
         void receiveDataref (const udpBuffer_t &receiveBuffer, size_t length);
         template <typename T>
-        void sendUdpData (T &buffer);
+        void sendUdpData (T buffer);
 };
 /**
- * @brief 通过 UDP 发送数据
+ * @brief 通过 UDP 异步发送数据
  * @param buffer 缓冲区 array<char, N>
  */
 template <typename T>
-void XPlaneUdp::sendUdpData (T &buffer) {
-    localSocket.send_to(Asio::buffer(buffer), remoteEndpoint); // 线程安全 不加锁
+void XPlaneUdp::sendUdpData (T buffer) {
+    Asio::post(strand_, [this, copyBuffer=std::move(buffer)] () {
+        this->localSocket.async_send_to(Asio::buffer(copyBuffer), this->remoteEndpoint,
+                                        Asio::bind_executor(strand_, [this](const Sys::error_code &error,
+                                                                            std::size_t bytes_transferred) {}));
+    });
 }
 
 /**
