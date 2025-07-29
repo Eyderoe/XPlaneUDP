@@ -19,6 +19,23 @@ namespace Sys = boost::system;
 namespace Asio = boost::asio;
 namespace Ip = Asio::ip;
 
+using udpBuffer_t = std::array<char, 1472>;
+
+class XPlaneIpNotFound;
+class XPlaneTimeout;
+class XPlaneVersionNotSupported;
+class XPlaneUdp;
+
+template <typename T>
+size_t receiveData (Ip::udp::socket &socket, T &buffer, Ip::udp::endpoint &endpoint, int timeout);
+template size_t receiveData<udpBuffer_t> (Ip::udp::socket &, udpBuffer_t &, Ip::udp::endpoint &, int);
+template <typename T1, typename First, typename... Rests>
+void unpack (const T1 &container, size_t offset, First &first, Rests &... rest);
+template <typename T1, typename... Rests>
+void pack (T1 &container, size_t offset, const std::string &first, const Rests &... rest);
+template <typename T1, typename First, typename... Rests>
+void pack (T1 &container, size_t offset, const First &first, const Rests &... rest);
+
 
 class XPlaneIpNotFound : public std::exception {
     public:
@@ -47,19 +64,22 @@ class XPlaneUdp {
     public:
         explicit XPlaneUdp (Asio::io_context &io_context);
         ~XPlaneUdp ();
-        void addDataRef (const std::string &dataRef, int32_t freq = 1, int index = -1);
-        float getDataRef (const std::string &dataRef, int index = -1);
+        void addDataref (const std::string &dataRef, int32_t freq = 1, int index = -1);
+        float getDataref (const std::string &dataRef, float defaultValue = 0, int index = -1);
     private:
         int32_t datarefIndex{0}; // dataref 索引
         std::map<int, float> latestDataref; // 最新 dataref 数据
         boost::bimap<int32_t, std::string> dataref; // 双映射 dataref <索引,名称>
-        Asio::io_context &io_context;
-        Ip::udp::socket socket;
-        Ip::udp::endpoint listenEndpoint;
+        Asio::io_context &io_context; // 全局 io_context
+        Ip::udp::socket localSocket; // 绑定了本地地址的 socket
+        Ip::udp::endpoint remoteEndpoint; // xp 地址
         std::atomic<bool> running{false}; // 线程运行状态
+        std::mutex latestMutex; // dataref 最新数据读写锁
+        std::shared_mutex datarefMapMutex; // dataref 映射读写锁
 
         void autoUdpFind ();
         void receiveUdpData ();
+        void receiveDataref (const udpBuffer_t &receiveBuffer, size_t length);
         template <typename T>
         void sendUdpData (T &buffer);
 };
@@ -69,14 +89,14 @@ class XPlaneUdp {
  */
 template <typename T>
 void XPlaneUdp::sendUdpData (T &buffer) {
-    socket.send_to(Asio::buffer(buffer), listenEndpoint); // 线程安全 不加锁
+    localSocket.send_to(Asio::buffer(buffer), remoteEndpoint); // 线程安全 不加锁
 }
 
 /**
  * @brief 定时阻塞接收 UDP 数据
  * @param socket 套接字
  * @param buffer 接收缓冲区
- * @param endpoint 网络端子
+ * @param endpoint 发送段网络端子
  * @param timeout 超时时间(ms), 接收超时或无接收数据则抛出异常
  * @return 接收到的字符数量
  */
@@ -120,25 +140,25 @@ size_t receiveData (Ip::udp::socket &socket, T &buffer, Ip::udp::endpoint &endpo
     }
     return bytesReceived;
 }
-template size_t receiveData<std::array<char, 1472>> (Ip::udp::socket &,
-                                                     std::array<char, 1472> &, Ip::udp::endpoint &, int);
 
 /**
  * @brief 解包一串字符数据
- * @tparam T1 支持.data()方法的容器
+ * @tparam T1 支持.data()方法的char容器
  * @tparam First,Rests 基本数据类型
+ * @param offset 偏移字节
  */
 template <typename T1, typename First, typename... Rests>
 void unpack (const T1 &container, size_t offset, First &first, Rests &... rest) {
     memcpy(&first, container.data() + offset, sizeof(First));
-    if constexpr (sizeof...(rest) > 0) // 编译期确定哪些函数特化, 不用写终止函数
+    if constexpr (sizeof...(rest) > 0) // 编译期确定哪些函数特化, 不用写终止函数(空包)
         unpack(container, offset + sizeof(First), rest...);
 }
 
 /**
  * @brief 打包为字符数据
- * @tparam T1 支持.data()方法的容器
- * @tparam First,Rests 基本数据类型, array<char, 413>
+ * @tparam T1 支持.data()方法的char容器
+ * @tparam First,Rests 基本数据类型,string
+ *
  */
 template <typename T1, typename First, typename... Rests>
 void pack (T1 &container, size_t offset, const First &first, const Rests &... rest) {
@@ -146,12 +166,16 @@ void pack (T1 &container, size_t offset, const First &first, const Rests &... re
     if constexpr (sizeof...(rest) > 0)
         pack(container, offset + sizeof(First), rest...);
 }
+/**
+ * @brief 打包为字符数据
+ * @tparam T1 支持.data()方法的char容器
+ * @tparam Rests 基本数据类型,string
+ */
 template <typename T1, typename... Rests>
-void pack (T1 &container, size_t offset, const std::array<char, 413> &first, const Rests &... rest) {
+void pack (T1 &container, size_t offset, const std::string &first, const Rests &... rest) {
     memcpy(container.data() + offset, first.data(), first.size());
     if constexpr (sizeof...(rest) > 0)
         pack(container, offset + first.size(), rest...);
 }
-
 
 #endif //XPLANEUDP_HPP

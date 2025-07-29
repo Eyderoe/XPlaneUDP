@@ -1,20 +1,26 @@
 #include "XPlaneUDP.hpp"
 
-using namespace std;
-
 #ifdef _WIN32
 constexpr bool isWindows = true;
 #else
 constexpr bool isWindows = false;
 #endif
 
-XPlaneUdp::XPlaneUdp (Asio::io_context &io_context): io_context(io_context), socket(io_context), listenEndpoint() {
+using namespace std;
+
+constexpr int headerLength{5}; // 指令头部长度 4字母+1空
+const static string datarefHead{'R', 'R', 'E', 'F', '\x00'};
+
+
+XPlaneUdp::XPlaneUdp (Asio::io_context &io_context): io_context(io_context), localSocket(io_context), remoteEndpoint() {
     autoUdpFind();
-    socket.open(listenEndpoint.protocol());
-    socket.bind(listenEndpoint);
+    Ip::udp::endpoint local(Ip::udp::v4(), 0);
+    localSocket.open(local.protocol());
+    localSocket.bind(local);
     running.store(true);
     thread([this] () { receiveUdpData(); }).detach();
 }
+
 XPlaneUdp::~XPlaneUdp () {
     running.store(false);
 }
@@ -25,30 +31,28 @@ XPlaneUdp::~XPlaneUdp () {
 void XPlaneUdp::autoUdpFind () {
     // 创建 UDP 并允许端口复用
     Asio::io_context ioContext;
-    Ip::udp::socket socket(ioContext);
-    socket.open(Ip::udp::v4());
+    Ip::udp::socket multicastSocket(ioContext);
+    multicastSocket.open(Ip::udp::v4());
     Asio::socket_base::reuse_address option(true);
-    socket.set_option(option);
+    multicastSocket.set_option(option);
     // 绑定至多播
-    Ip::udp::endpoint listenEndpoint;
+    Ip::udp::endpoint multicastEndpoint;
     if (isWindows)
-        listenEndpoint = Ip::udp::endpoint(Ip::udp::v4(), multiCastPort);
+        multicastEndpoint = Ip::udp::endpoint(Ip::udp::v4(), multiCastPort);
     else
-        listenEndpoint = Ip::udp::endpoint(Ip::make_address(multiCastGroup), multiCastPort);
-    socket.bind(listenEndpoint);
+        multicastEndpoint = Ip::udp::endpoint(Ip::make_address(multiCastGroup), multiCastPort);
+    multicastSocket.bind(multicastEndpoint);
     Ip::address_v4 multicast_address = Ip::make_address_v4(multiCastGroup);
-    socket.set_option(Asio::ip::multicast::join_group(multicast_address));
+    multicastSocket.set_option(Asio::ip::multicast::join_group(multicast_address));
     // 接收数据
-    array<char, 1472> buffer{};
+    udpBuffer_t buffer{};
     Ip::udp::endpoint senderEndpoint;
     size_t bytesReceived;
     try {
-        bytesReceived = receiveData(socket, buffer, senderEndpoint, 3000);
+        bytesReceived = receiveData(multicastSocket, buffer, senderEndpoint, 3000);
     } catch (const XPlaneTimeout &e) {
-        socket.close();
         throw e;
     }
-    socket.close();
     cout << "XPlane Beacon: ";
     for (size_t i = 0; i < bytesReceived; i++)
         cout << hex << setw(2) << setfill('0') << (static_cast<unsigned int>(buffer[i]) & 0xff);
@@ -76,14 +80,13 @@ void XPlaneUdp::autoUdpFind () {
         uint32_t role;
         uint16_t port;
         unpack(data, 0, mainVer, minorVer, software, xpVer, role, port);
-        port=49001;
         if ((mainVer == 1) && (minorVer <= 2) && (software == 1)) {
             cout << "XPlane Beacon Version: " << static_cast<int>(mainVer) << '.' << static_cast<int>(minorVer) << '.'
                     << software << endl;
             cout << dec << "IP: " << senderEndpoint.address() << ", Port: " << port << ", hostname: " << string_view{
                 buffer.data() + 21, bytesReceived - 24
             } << ", XPlaneVersion: " << xpVer << ", role: " << role << endl;
-            this->listenEndpoint = Ip::udp::endpoint(Ip::make_address(senderEndpoint.address().to_string()), port);
+            this->remoteEndpoint = Ip::udp::endpoint(Ip::make_address(senderEndpoint.address().to_string()), port);
         } else {
             cerr << "XPlane Beacon Version not supported: " << mainVer << '.' << minorVer << '.' << software << endl;
             throw XPlaneVersionNotSupported();
@@ -91,19 +94,41 @@ void XPlaneUdp::autoUdpFind () {
     }
 }
 
-
+/**
+ * @brief 接收 UDP 数据
+ */
 void XPlaneUdp::receiveUdpData () {
-    array<char, 1472> recvBuffer{};
+    udpBuffer_t recvBuffer{};
     while (running.load()) {
-        if (dataref.empty())
-            continue;
+        {
+            if (shared_lock<shared_mutex> lock(datarefMapMutex); dataref.empty()) {
+                this_thread::sleep_for(std::chrono::seconds(1));
+                continue;
+            }
+        }
         Sys::error_code ec;
         size_t bytesReceived = 0;
-        cout<<listenEndpoint.port()<<endl;
-        bytesReceived = socket.receive_from(Asio::buffer(recvBuffer),listenEndpoint , 0, ec);
-        if (bytesReceived > 0) {
-            cout<<bytesReceived<<endl;
+        Ip::udp::endpoint sender{};
+        bytesReceived = localSocket.receive_from(Asio::buffer(recvBuffer), sender, 0, ec);
+        if (bytesReceived > headerLength) {
+            if (equal(datarefHead.begin(), datarefHead.begin() + 4, recvBuffer.begin())) // 文档有误 xp12实际返回 RREF,{...},...
+                receiveDataref(recvBuffer, bytesReceived);
         }
+    }
+}
+
+/**
+ * 处理接收到的 dataref 数据
+ * @param receiveBuffer UDP 接收缓冲区
+ * @param length 接收到的数据长度
+ */
+void XPlaneUdp::receiveDataref (const udpBuffer_t &receiveBuffer, const size_t length) {
+    lock_guard<mutex> guard(latestMutex);
+    for (int i = headerLength; i < length; i += 8) {
+        int index;
+        float value;
+        unpack(receiveBuffer, i, index, value);
+        latestDataref[index] = value;
     }
 }
 
@@ -113,25 +138,49 @@ void XPlaneUdp::receiveUdpData () {
  * @param freq 频率, 0时停止
  * @param index 目标为数组时的索引
  */
-void XPlaneUdp::addDataRef (const string &dataRef, const int32_t freq, const int index) {
-    const static string cmd{'R', 'R', 'E', 'F', '\x00'};
-    if (freq == 0)
+void XPlaneUdp::addDataref (const string &dataRef, const int32_t freq, const int index) {
+    if (unique_lock<shared_mutex> lock(datarefMapMutex); freq == 0)
         dataref.right.erase(dataRef);
     string strIndex{};
     if (index != -1) // 如果对应dataref是数组, 则为索引
         strIndex = '[' + to_string(index) + ']';
-    dataref.insert({datarefIndex, dataRef + strIndex});
+    {
+        unique_lock<shared_mutex> lock(datarefMapMutex);
+        dataref.insert({datarefIndex, dataRef + strIndex});
+    }
     array<char, 413> buffer{};
-    pack(buffer, 0, cmd, freq, datarefIndex, dataRef + strIndex);
+    strIndex = dataRef + strIndex;
+    pack(buffer, 0, datarefHead, freq, datarefIndex, strIndex);
     datarefIndex++;
     sendUdpData(buffer);
 }
 
-
 /**
  * @brief 获取某个 dataref 最新值
  * @param dataRef dataref 名称
+ * @param defaultValue 不存在时的默认值
  * @param index 目标为数组时的索引
  * @return 最新值
  */
-float XPlaneUdp::getDataRef (const std::string &dataRef, const int index) {}
+float XPlaneUdp::getDataref (const std::string &dataRef, float defaultValue, int index) {
+    string combine{};
+    if (index != -1)
+        combine = dataRef + '[' + to_string(index) + ']';
+    else
+        combine = dataRef;
+    int datarefIndex{};
+    {
+        shared_lock<shared_mutex> lock(datarefMapMutex);
+        const auto it = dataref.right.find(combine);
+        if (it == dataref.right.end())
+            return defaultValue;
+        datarefIndex = it->get_left();
+    }
+    {
+        lock_guard<mutex> guard(latestMutex);
+        const auto it = latestDataref.find(datarefIndex);
+        if (it == latestDataref.end())
+            return defaultValue;
+        return it->second;
+    }
+}
