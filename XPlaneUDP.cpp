@@ -13,17 +13,11 @@ const static string datarefHead{'R', 'R', 'E', 'F', '\x00'};
 const static string beconHead{'B', 'E', 'C', 'N', '\x00'};
 
 
-XPlaneUdp::XPlaneUdp (Asio::io_context &io_context): localSocket(io_context), strand_(io_context.get_executor()) {
+XPlaneUdp::XPlaneUdp (Asio::io_context &io_context): localSocket(io_context), io_context(io_context) {
     autoUdpFind();
     Ip::udp::endpoint local(Ip::udp::v4(), 0);
     localSocket.open(local.protocol());
     localSocket.bind(local);
-    running.store(true);
-    thread([this] () { receiveUdpData(); }).detach();
-}
-
-XPlaneUdp::~XPlaneUdp () {
-    running.store(false);
 }
 
 /**
@@ -97,40 +91,11 @@ void XPlaneUdp::autoUdpFind () {
 }
 
 /**
- * @brief 接收 UDP 数据
- */
-void XPlaneUdp::receiveUdpData () {
-    udpBuffer_t recvBuffer{};
-    while (running.load()) {
-        {
-            if (shared_lock<shared_mutex> lock(datarefMapMutex); dataref.empty()) {
-                this_thread::sleep_for(std::chrono::seconds(1));
-                continue;
-            }
-        }
-        Ip::udp::endpoint sender{};
-        size_t bytesReceived{};
-        try {
-            bytesReceived = receiveData(localSocket, recvBuffer, sender, 2000);
-        } catch (const XPlaneTimeout &e) {
-            if (shared_lock<shared_mutex> lock(datarefMapMutex); dataref.empty())
-                continue;
-            throw e;
-        }
-        if (bytesReceived > headerLength) {
-            if (equal(datarefHead.begin(), datarefHead.begin() + 4, recvBuffer.begin())) // 文档有误 xp12实际返回 RREF,{...},...
-                receiveDataref(recvBuffer, bytesReceived);
-        }
-    }
-}
-
-/**
  * 处理接收到的 dataref 数据
  * @param receiveBuffer UDP 接收缓冲区
  * @param length 接收到的数据长度
  */
 void XPlaneUdp::receiveDataref (const udpBuffer_t &receiveBuffer, const size_t length) {
-    lock_guard<mutex> guard(latestMutex);
     for (int i = headerLength; i < length; i += 8) {
         int index;
         float value;
@@ -146,15 +111,12 @@ void XPlaneUdp::receiveDataref (const udpBuffer_t &receiveBuffer, const size_t l
  * @param index 目标为数组时的索引
  */
 void XPlaneUdp::addDataref (const string &dataRef, const int32_t freq, const int index) {
-    if (unique_lock<shared_mutex> lock(datarefMapMutex); freq == 0)
+    if (freq == 0)
         dataref.right.erase(dataRef);
     string strIndex{};
     if (index != -1) // 如果对应dataref是数组, 则为索引
         strIndex = '[' + to_string(index) + ']';
-    {
-        unique_lock<shared_mutex> lock(datarefMapMutex);
-        dataref.insert({datarefIndex, dataRef + strIndex});
-    }
+    dataref.insert({datarefIndex, dataRef + strIndex});
     array<char, 413> buffer{};
     strIndex = dataRef + strIndex;
     pack(buffer, 0, datarefHead, freq, datarefIndex, strIndex);
@@ -183,7 +145,6 @@ float XPlaneUdp::getDataref (const std::string &dataRef, float defaultValue, int
  * @return 最新值
  */
 float XPlaneUdp::getDataref (const int32_t id, const float defaultValue) {
-    lock_guard<mutex> guard(latestMutex);
     const auto it = latestDataref.find(id);
     if (it == latestDataref.end())
         return defaultValue;
@@ -202,7 +163,6 @@ int32_t XPlaneUdp::datarefName2Id (const std::string &dataRef, int index) {
         combine = dataRef + '[' + to_string(index) + ']';
     else
         combine = dataRef;
-    shared_lock<shared_mutex> lock(datarefMapMutex);
     const auto it = dataref.right.find(combine);
     if (it == dataref.right.end())
         return -1;
