@@ -13,12 +13,16 @@ const static string datarefHead{'R', 'R', 'E', 'F', '\x00'};
 const static string beconHead{'B', 'E', 'C', 'N', '\x00'};
 
 
-XPlaneUdp::XPlaneUdp (Asio::io_context &io_context): localSocket(io_context), io_context(io_context) {
+XPlaneUdp::XPlaneUdp (Asio::io_context &io_context): localSocket(io_context), strand_(io_context.get_executor()) {
     autoUdpFind();
     Ip::udp::endpoint local(Ip::udp::v4(), 0);
     localSocket.open(local.protocol());
     localSocket.bind(local);
+    addDataref("sim/network/misc/network_time_sec"); // 维护定时器
+    startReceive();
 }
+
+XPlaneUdp::~XPlaneUdp () {}
 
 /**
  * @brief 寻找电脑上运行的 XPlane 实例
@@ -91,17 +95,27 @@ void XPlaneUdp::autoUdpFind () {
 }
 
 /**
- * 处理接收到的 dataref 数据
- * @param receiveBuffer UDP 接收缓冲区
- * @param length 接收到的数据长度
+ * @brief 开始接收异步接收
  */
-void XPlaneUdp::receiveDataref (const udpBuffer_t &receiveBuffer, const size_t length) {
-    for (int i = headerLength; i < length; i += 8) {
-        int index;
-        float value;
-        unpack(receiveBuffer, i, index, value);
-        latestDataref[index] = value;
-    }
+void XPlaneUdp::startReceive () {
+    Ip::udp::endpoint temp{};
+    localSocket.async_receive_from(Asio::buffer(udpReceive),temp ,
+                                   bind_executor(strand_, [this](auto && PH1, auto && PH2) { handleReceive(std::forward<decltype(PH1)>(PH1), std::forward<decltype(PH2)>(PH2)); }));
+}
+
+/**
+ * @brief 异步接收回调函数
+ * @param error 错误
+ * @param length 接收长度
+ */
+void XPlaneUdp::handleReceive (const Sys::error_code &error, const size_t length) {
+    if (!error) {
+        if (equal(datarefHead.begin(), datarefHead.begin() + 4, udpReceive.begin())) { // dataref解析
+            cout << "receive length: " << length << endl;
+        }
+        startReceive();
+    } else if (error == Asio::error::operation_aborted)
+        cerr << "Receive aborted" << endl;
 }
 
 /**
@@ -111,17 +125,17 @@ void XPlaneUdp::receiveDataref (const udpBuffer_t &receiveBuffer, const size_t l
  * @param index 目标为数组时的索引
  */
 void XPlaneUdp::addDataref (const string &dataRef, const int32_t freq, const int index) {
-    if (freq == 0)
-        dataref.right.erase(dataRef);
-    string strIndex{};
-    if (index != -1) // 如果对应dataref是数组, 则为索引
-        strIndex = '[' + to_string(index) + ']';
-    dataref.insert({datarefIndex, dataRef + strIndex});
+    string combineName{(index != -1) ? (dataRef + '[' + to_string(index) + ']') : dataRef};
+    if (freq == 0) {
+        dataref.right.erase(combineName);
+        if (dataref.size() == 1) // 始终保留一个dataref维持udp通信
+            return;
+    } else
+        dataref.insert({datarefIndex, combineName});
     array<char, 413> buffer{};
-    strIndex = dataRef + strIndex;
-    pack(buffer, 0, datarefHead, freq, datarefIndex, strIndex);
+    pack(buffer, 0, datarefHead, freq, datarefIndex, combineName);
     datarefIndex++;
-    sendUdpData(move(buffer));
+    sendUdpData(buffer);
 }
 
 /**
@@ -158,12 +172,8 @@ float XPlaneUdp::getDataref (const int32_t id, const float defaultValue) {
  * @return 唯一 id, 未找到返回 -1
  */
 int32_t XPlaneUdp::datarefName2Id (const std::string &dataRef, int index) {
-    string combine{};
-    if (index != -1)
-        combine = dataRef + '[' + to_string(index) + ']';
-    else
-        combine = dataRef;
-    const auto it = dataref.right.find(combine);
+    const string combineName{(index != -1) ? (dataRef + '[' + to_string(index) + ']') : dataRef};
+    const auto it = dataref.right.find(combineName);
     if (it == dataref.right.end())
         return -1;
     return it->get_left();
