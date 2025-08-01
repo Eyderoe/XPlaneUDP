@@ -2,11 +2,10 @@
 #include <ctime>
 
 int main () {
-    Asio::io_context io_context;
-    auto xp = XPlaneUdp(io_context);
+    auto xp = XPlaneUdp();
     xp.addDataref("sim/flightmodel/position/latitude"); // 读取基本数据
     xp.addDataref("sim/flightmodel/position/longitude");
-    xp.addDataref("sim/flightmodel/engine/POINT_thrust", 1, 0); // 读取数组
+    xp.addDataref("sim/flightmodel/engine/POINT_thrust", 10, 0); // 读取数组
     while (true) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         std::cout << xp.getDataref("sim/flightmodel/position/latitude") << std::endl;

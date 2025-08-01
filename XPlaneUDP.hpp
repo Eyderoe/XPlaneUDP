@@ -63,31 +63,37 @@ class XPlaneUdp {
     static constexpr unsigned short multiCastPort{49707};
     public:
         // 默认
-        explicit XPlaneUdp (Asio::io_context &io_context);
+        XPlaneUdp ();
         ~XPlaneUdp ();
         // dataref
         void addDataref (const std::string &dataRef, int32_t freq = 1, int index = -1);
         float getDataref (const std::string &dataRef, float defaultValue = 0, int index = -1);
         float getDataref (int32_t id, float defaultValue = 0);
         int32_t datarefName2Id (const std::string &dataRef, int index = -1);
+        // 控制
+        void close ();
     private:
         // dataref
         int32_t datarefIndex{0}; // dataref 索引
         std::map<int, float> latestDataref; // 最新 dataref 数据
         boost::bimap<int32_t, std::string> dataref; // 双映射 dataref <索引,名称>
         // 网络
+        Asio::io_context io_context{};
         Ip::udp::socket localSocket; // 绑定了本地地址的 socket
-        Ip::udp::endpoint remoteEndpoint{}; // xp 地址
-        // 异步
+        Ip::udp::endpoint remoteEndpoint; // xp 地址
+        // 多线程
+        std::atomic<bool> runThread{true};
+        std::thread ioThread; // 接收线程
         Asio::strand<Asio::io_context::executor_type> strand_; // udp协调
-        udpBuffer_t udpReceive{}; // udp 接收缓冲区
+        std::mutex latestDatarefMutex; // 锁
+        std::shared_mutex datarefMutex; // 读写锁
 
         // 网络
         void autoUdpFind ();
-        void startReceive ();
-        void handleReceive (const Sys::error_code &error, size_t length); // 新增：处理接收到的数据
         template <typename T>
         void sendUdpData (T buffer);
+        void startReceive ();
+        void handleReceive (std::vector<char> received);
 };
 /**
  * @brief 通过 UDP 异步发送数据
@@ -96,9 +102,8 @@ class XPlaneUdp {
 template <typename T>
 void XPlaneUdp::sendUdpData (T buffer) {
     Asio::post(strand_, [this, copyBuffer=std::move(buffer)] () {
-        this->localSocket.async_send_to(Asio::buffer(copyBuffer), this->remoteEndpoint,
-                                        Asio::bind_executor(strand_, [this](const Sys::error_code &error,
-                                                                            std::size_t bytes_transferred) {}));
+        localSocket.async_send_to(Asio::buffer(copyBuffer), this->remoteEndpoint,
+                                  Asio::bind_executor(strand_, [](const Sys::error_code &, std::size_t)-> void {}));
     });
 }
 
@@ -107,11 +112,11 @@ void XPlaneUdp::sendUdpData (T buffer) {
  * @param socket 套接字
  * @param buffer 接收缓冲区
  * @param endpoint 发送段网络端子
- * @param timeout 超时时间(ms), 接收超时或无接收数据则抛出异常
+ * @param timeout 超时时间(ms), 接收超时或无接收数据则抛出XPlaneTimeout异常
  * @return 接收到的字符数量
  */
 template <typename T>
-size_t receiveData (Ip::udp::socket &socket, T &buffer, Ip::udp::endpoint &endpoint, int timeout) {
+size_t receiveData (Ip::udp::socket &socket, T &buffer, Ip::udp::endpoint &endpoint, const int timeout) {
     size_t bytesReceived = 0;
     Sys::error_code ec;
     bool finished = false;
@@ -127,27 +132,17 @@ size_t receiveData (Ip::udp::socket &socket, T &buffer, Ip::udp::endpoint &endpo
     });
     // 异步接收数据
     socket.async_receive_from(Asio::buffer(buffer), endpoint, [&](const Sys::error_code &error, size_t bytes) {
-        timer.cancel(); // 接收到数据，取消定时器
+        timer.cancel();
         ec = error;
         bytesReceived = bytes;
         finished = true;
     });
-    // 运行 io_context，直到一个操作完成
     io_context.restart();
-    // 循环执行，直到有操作完成
     while (!finished && !io_context.stopped()) {
         io_context.run_one();
     }
     // 错误处理
-    if (!finished) { // 如果 finished 为 false，说明 io_context 停止了但接收操作的回调没有被触发
-        throw XPlaneTimeout();
-    }
-    if (ec) {
-        if (ec == Asio::error::operation_aborted) {
-            throw XPlaneTimeout();
-        }
-        throw Sys::system_error(ec);
-    }
+
     return bytesReceived;
 }
 

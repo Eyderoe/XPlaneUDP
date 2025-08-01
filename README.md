@@ -1,6 +1,6 @@
 XPlane UDP
 ===============================
-与 XPlane 异步通信
+与 XPlane 的异步通信，线程安全
 
 测试环境：XPlane12、C++17、Boost1.78、MinGW10.3
 

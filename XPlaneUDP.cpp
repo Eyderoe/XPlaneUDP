@@ -13,16 +13,41 @@ const static string datarefHead{'R', 'R', 'E', 'F', '\x00'};
 const static string beconHead{'B', 'E', 'C', 'N', '\x00'};
 
 
-XPlaneUdp::XPlaneUdp (Asio::io_context &io_context): localSocket(io_context), strand_(io_context.get_executor()) {
+XPlaneUdp::XPlaneUdp (): localSocket(io_context), strand_(io_context.get_executor()) {
+    // 获取绑定xplane
     autoUdpFind();
     Ip::udp::endpoint local(Ip::udp::v4(), 0);
     localSocket.open(local.protocol());
     localSocket.bind(local);
-    addDataref("sim/network/misc/network_time_sec"); // 维护定时器
-    startReceive();
+    // 保持udp连接
+    addDataref("sim/network/misc/network_time_sec");
+    io_context.run();
+    // 启动接收
+    ioThread = thread([this] () { this->startReceive(); });
+    ioThread.detach();
 }
 
-XPlaneUdp::~XPlaneUdp () {}
+XPlaneUdp::~XPlaneUdp () {
+    close();
+}
+
+/**
+ * @brief 关闭udp连接
+ */
+void XPlaneUdp::close () {
+    // 关闭线程
+    runThread.store(false);
+    localSocket.cancel();
+    // 停止udp接收
+    unique_lock<shared_mutex> lock{datarefMutex};
+    auto nowDataref = dataref.right;
+    addDataref("inop");
+    for (auto &item : nowDataref)
+        addDataref(item.first, 0);
+    lock.unlock();
+    io_context.reset();
+    io_context.run();
+}
 
 /**
  * @brief 寻找电脑上运行的 XPlane 实例
@@ -57,16 +82,7 @@ void XPlaneUdp::autoUdpFind () {
     for (size_t i = 0; i < bytesReceived; i++)
         cout << hex << setw(2) << setfill('0') << (static_cast<unsigned int>(buffer[i]) & 0xff);
     cout << endl;
-    // 解析数据 12.2.0-rc1
-    /* 头部 char8[5] (BECN\x00)
-     * 主版本 uchar8 (1 不明)
-     * 副版本 uchar8 (2 不明)
-     * 程序 int32 (1XP 2PlaneMaker)
-     * 版本号 int32 (122015)
-     * 规则 uint32 (1主机 2外部 3IOS)
-     * 端口 ushort16 (49000)
-     * 计算机名称 char8[N] (LAPTOP-NO0CK753)
-     */
+    // 解析数据
     if ((bytesReceived < 5 + 16) || (string_view{buffer.data(), 5} != beconHead)) { // 非xp数据
         cerr << "Unknown packet from " << senderEndpoint << endl;
         cout << buffer.size() << " bytes" << endl;
@@ -99,23 +115,27 @@ void XPlaneUdp::autoUdpFind () {
  */
 void XPlaneUdp::startReceive () {
     Ip::udp::endpoint temp{};
-    localSocket.async_receive_from(Asio::buffer(udpReceive),temp ,
-                                   bind_executor(strand_, [this](auto && PH1, auto && PH2) { handleReceive(std::forward<decltype(PH1)>(PH1), std::forward<decltype(PH2)>(PH2)); }));
+    udpBuffer_t udpReceive{};
+    while (runThread) {
+        const auto length = receiveData(localSocket, udpReceive, temp, 3000);
+        handleReceive({udpReceive.begin(), udpReceive.begin() + length});
+    }
 }
 
 /**
- * @brief 异步接收回调函数
- * @param error 错误
- * @param length 接收长度
+ * @brief 处理接收到的udp数据
+ * @param received 接收数据
  */
-void XPlaneUdp::handleReceive (const Sys::error_code &error, const size_t length) {
-    if (!error) {
-        if (equal(datarefHead.begin(), datarefHead.begin() + 4, udpReceive.begin())) { // dataref解析
-            cout << "receive length: " << length << endl;
+void XPlaneUdp::handleReceive (vector<char> received) {
+    if (equal(datarefHead.begin(), datarefHead.begin() + 4, received.begin())) { // dataref,文档有误实际返回 RREF,
+        unique_lock<mutex> lock{latestDatarefMutex};
+        for (int i = headerLength; i < received.size(); i += 8) {
+            int index;
+            float value;
+            unpack(received, i, index, value);
+            latestDataref[index] = value;
         }
-        startReceive();
-    } else if (error == Asio::error::operation_aborted)
-        cerr << "Receive aborted" << endl;
+    }
 }
 
 /**
@@ -126,7 +146,7 @@ void XPlaneUdp::handleReceive (const Sys::error_code &error, const size_t length
  */
 void XPlaneUdp::addDataref (const string &dataRef, const int32_t freq, const int index) {
     string combineName{(index != -1) ? (dataRef + '[' + to_string(index) + ']') : dataRef};
-    if (freq == 0) {
+    if (unique_lock<shared_mutex> lock{datarefMutex}; freq == 0) {
         dataref.right.erase(combineName);
         if (dataref.size() == 1) // 始终保留一个dataref维持udp通信
             return;
@@ -159,6 +179,7 @@ float XPlaneUdp::getDataref (const std::string &dataRef, float defaultValue, int
  * @return 最新值
  */
 float XPlaneUdp::getDataref (const int32_t id, const float defaultValue) {
+    lock_guard<mutex> lock{latestDatarefMutex};
     const auto it = latestDataref.find(id);
     if (it == latestDataref.end())
         return defaultValue;
@@ -173,6 +194,7 @@ float XPlaneUdp::getDataref (const int32_t id, const float defaultValue) {
  */
 int32_t XPlaneUdp::datarefName2Id (const std::string &dataRef, int index) {
     const string combineName{(index != -1) ? (dataRef + '[' + to_string(index) + ']') : dataRef};
+    shared_lock<shared_mutex> lock{datarefMutex};
     const auto it = dataref.right.find(combineName);
     if (it == dataref.right.end())
         return -1;
