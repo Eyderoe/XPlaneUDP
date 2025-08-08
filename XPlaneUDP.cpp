@@ -26,23 +26,15 @@ XPlaneUdp::XPlaneUdp (): localSocket(io_context), strand_(io_context.get_executo
     io_context.reset();
     io_context.run();
     // 启动接收
-    thread ioThread = thread([this] () { this->startReceive(); });
-    ioThread.detach();
+    ioThread = thread([this] () { startReceive(); });
 }
 
 XPlaneUdp::~XPlaneUdp () {
-    close();
-}
-
-/**
- * @brief 关闭udp连接
- */
-void XPlaneUdp::close () {
     // 关闭线程
     runThread.store(false);
-    localSocket.cancel();
-    while (!alreadyClose)
-        this_thread::sleep_for(std::chrono::milliseconds(10));
+    localSocket.close();
+    if (ioThread.joinable())
+        ioThread.join();
     // 停止udp接收
     shared_lock<shared_mutex> lock{datarefMutex};
     vector<string> allDatarefs;
@@ -57,28 +49,31 @@ void XPlaneUdp::close () {
 }
 
 /**
+ * @brief 获取是否 XPlaneTimeOut
+ */
+bool XPlaneUdp::getState () {
+    return timeout;
+}
+
+/**
  * @brief 开始接收异步接收
  */
 void XPlaneUdp::startReceive () {
     Ip::udp::endpoint temp{};
     udpBuffer_t udpReceive{};
-    bool closed{false};
     size_t length;
     while (runThread) {
         try {
             length = receiveUdpData(udpReceive, localSocket, temp, 3000);
         } catch (const XPlaneTimeout &e) {
-            closed = true;
-            break;
+            cerr << e.what();
+            timeout.store(true);
+            continue;
         }
         if (length < 5)
             continue;
+        timeout.store(false);
         handleReceive({udpReceive.begin(), udpReceive.begin() + length});
-    }
-    alreadyClose.store(true);
-    if (closed) {
-        close();
-        throw XPlaneTimeout();
     }
 }
 

@@ -1,5 +1,4 @@
 #include "XPlaneUDP.hpp"
-#include <ctime>
 
 int main () {
     auto xp = XPlaneUdp();

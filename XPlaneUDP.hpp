@@ -72,31 +72,32 @@ class XPlaneUdp {
         // 默认
         XPlaneUdp ();
         ~XPlaneUdp ();
+        // 状态
+        bool getState ();
         // dataref
         void addDataref (const std::string &dataRef, int32_t freq = 1, int index = -1);
-        int32_t datarefName2Id (const std::string &dataRef, int index = -1);
         float getDataref (const std::string &dataRef, float defaultValue = 0, int index = -1);
         float getDataref (int32_t id, float defaultValue = 0);
         void setDataref (const std::string &dataRef, float value, int index = -1);
+        int32_t datarefName2Id (const std::string &dataRef, int index = -1);
         // 基本信息
         void needBasicInfo (int32_t freq = 1);
         PlaneInfo getBasicInfo ();
-        // 控制
-        void close ();
     private:
         // dataref
-        int32_t datarefIndex{0}; // dataref 索引
+        std::atomic<int32_t> datarefIndex{0}; // dataref 索引
         std::map<int, float> latestDataref; // 最新 dataref 数据
         boost::bimap<int32_t, std::string> dataref; // 双映射 dataref <索引,名称>
         // 基本信息
+        std::atomic<bool> timeout{false};
         PlaneInfo latestBasicInfo{};
         // 网络
         Asio::io_context io_context{}; // 上下文
         Ip::udp::socket localSocket; // 绑定了本地地址的 socket
         Ip::udp::endpoint remoteEndpoint; // xp 地址
         // 多线程
+        std::thread ioThread;
         std::atomic<bool> runThread{true}; // 线程终止循环
-        std::atomic<bool> alreadyClose{false}; // udp关闭标志
         strand_t strand_; // udp协调
         std::mutex latestDatarefMutex; // 锁
         std::shared_mutex datarefMutex; // 读写锁
@@ -117,7 +118,7 @@ class XPlaneUdp {
  */
 template <typename T>
 void XPlaneUdp::sendUdpData (T buffer) {
-    Asio::post(strand_, [this, copyBuffer=std::move(buffer)] () {
+    Asio::post(strand_, [this, copyBuffer=move(buffer)] () {
         localSocket.async_send_to(Asio::buffer(copyBuffer), remoteEndpoint, Asio::bind_executor(strand_,
                                       [](const Sys::error_code &, std::size_t)-> void {}));
     });
