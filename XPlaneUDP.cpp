@@ -29,10 +29,15 @@ XPlaneUdp::XPlaneUdp (): localSocket(io_context), strand_(io_context.get_executo
     ioThread = thread([this] () { startReceive(); });
 }
 
-XPlaneUdp::~XPlaneUdp () {
+XPlaneUdp::~XPlaneUdp () {}
+
+/**
+ * @brief 关闭udp后接发无法使用 !
+ */
+void XPlaneUdp::close () {
     // 关闭线程
     runThread.store(false);
-    localSocket.close();
+    localSocket.cancel();
     if (ioThread.joinable())
         ioThread.join();
     // 停止udp接收
@@ -41,12 +46,13 @@ XPlaneUdp::~XPlaneUdp () {
     for (auto &item : dataref.right)
         allDatarefs.emplace_back(item.first);
     lock.unlock();
-    needBasicInfo(0);
+    addBasicInfo(0);
     addDataref("inop");
     for (auto &item : allDatarefs)
         addDataref(item, 0);
     io_context.poll();
 }
+
 
 /**
  * @brief 获取是否 XPlaneTimeOut
@@ -72,7 +78,8 @@ void XPlaneUdp::startReceive () {
         }
         if (length < 5)
             continue;
-        timeout.store(false);
+        if (timeout)
+            timeout.store(false);
         handleReceive({udpReceive.begin(), udpReceive.begin() + length});
     }
 }
@@ -141,8 +148,7 @@ void XPlaneUdp::autoUdpFind () {
  * @param received 接收数据
  */
 void XPlaneUdp::handleReceive (vector<char> received) {
-    if (equal(datarefGetHead.begin(), datarefGetHead.begin() + 4, received.begin())) {
-        // dataref,文档有误实际返回 RREF,
+    if (equal(datarefGetHead.begin(), datarefGetHead.begin() + 4, received.begin())) { // dataref,文档有误实际返回 RREF,
         unique_lock<mutex> lock{latestDatarefMutex};
         for (int i = headerLength; i < received.size(); i += 8) {
             int index;
@@ -150,7 +156,7 @@ void XPlaneUdp::handleReceive (vector<char> received) {
             unpack(received, i, index, value);
             latestDataref[index] = value;
         }
-    } else if (equal(basicInfoHead.begin(), basicInfoHead.begin() + 4, received.begin())) {
+    } else if (equal(basicInfoHead.begin(), basicInfoHead.begin() + 4, received.begin())) { // 基本信息
         unique_lock<mutex> lock{latestBasicInfoMutex};
         unpack(received, headerLength, latestBasicInfo);
     }
@@ -177,7 +183,7 @@ void XPlaneUdp::addDataref (const string &dataRef, const int32_t freq, const int
 }
 
 /**
- * @brief 设置
+ * @brief 设置dataref值
  * @param dataRef dataref 名称
  * @param value 值
  * @param index 目标为数组时的索引
@@ -190,10 +196,43 @@ void XPlaneUdp::setDataref (const std::string &dataRef, const float value, const
 }
 
 /**
+ * @brief 新增监听目标,目标为数组
+ * @param dataRef dataref 名称
+ * @param length 数组长度
+ * @param freq 频率, 0时停止
+ */
+void XPlaneUdp::addDatarefArray (const std::string &dataRef, const int length, const int32_t freq) {
+    for (int i = 0; i < length; ++i)
+        addDataref(dataRef, freq, i);
+}
+
+/**
+ * @brief 获取某组 dataref 最新值
+ * @param dataRef dataref 名称
+ * @param container 存放数据的容器,容器长度应与数组长度一致
+ * @param defaultValue 不存在时的默认值
+ * @return 最新值
+ */
+void XPlaneUdp::getDatarefArray (const std::string &dataRef, std::vector<float> &container, float defaultValue) {
+    for (int i = 0; i < container.size(); ++i)
+        container[i] = getDataref(dataRef, defaultValue, i);
+}
+
+/**
+ * @brief 设置某组 dataref 值
+ * @param dataRef dataref 名称
+ * @param container 存放数据的容器,容器长度应与数组长度一致
+ */
+void XPlaneUdp::setDatarefArray (const std::string &dataRef, const std::vector<float> &container) {
+    for (int i = 0; i < container.size(); ++i)
+        setDataref(dataRef, container[i], i);
+}
+
+/**
  * @brief 开始接收基本信息
  * @param freq 接收频率
  */
-void XPlaneUdp::needBasicInfo (int32_t freq) {
+void XPlaneUdp::addBasicInfo (int32_t freq) {
     const string sentence = basicInfoHead + to_string(freq) + '\x00';
     vector<char> buffer(sentence.size());
     pack(buffer, 0, sentence);

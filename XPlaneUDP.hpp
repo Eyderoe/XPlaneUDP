@@ -73,15 +73,19 @@ class XPlaneUdp {
         XPlaneUdp ();
         ~XPlaneUdp ();
         // 状态
+        void close ();
         bool getState ();
         // dataref
         void addDataref (const std::string &dataRef, int32_t freq = 1, int index = -1);
         float getDataref (const std::string &dataRef, float defaultValue = 0, int index = -1);
         float getDataref (int32_t id, float defaultValue = 0);
         void setDataref (const std::string &dataRef, float value, int index = -1);
+        void addDatarefArray (const std::string &dataRef, int length, int32_t freq = 1);
+        void getDatarefArray (const std::string &dataRef, std::vector<float> &container, float defaultValue = 0);
+        void setDatarefArray (const std::string &dataRef, const std::vector<float> &container);
         int32_t datarefName2Id (const std::string &dataRef, int index = -1);
         // 基本信息
-        void needBasicInfo (int32_t freq = 1);
+        void addBasicInfo (int32_t freq = 1);
         PlaneInfo getBasicInfo ();
     private:
         // dataref

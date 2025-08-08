@@ -8,7 +8,7 @@ int main () {
     xp.addDataref(dataref1); // 读取dataref数据
     xp.addDataref(dataref2, 100, 0); // 读取dataref数组
     bool rev{}; // 写入dataref数据
-    xp.needBasicInfo(2); // 机模基本信息
+    xp.addBasicInfo(2); // 机模基本信息
     while (true) {
         std::this_thread::sleep_for(std::chrono::seconds(2));
         std::cout << "-------" << std::endl;
