@@ -30,9 +30,9 @@ class XPlaneUdp;
 template <typename T1, typename First, typename... Rests>
 void unpack (const T1 &container, size_t offset, First &first, Rests &... rest);
 template <typename T1, typename... Rests>
-void pack (T1 &container, size_t offset, const std::string &first, const Rests &... rest);
+size_t pack (T1 &container, size_t offset, const std::string &first, const Rests &... rest);
 template <typename T1, typename First, typename... Rests>
-void pack (T1 &container, size_t offset, const First &first, const Rests &... rest);
+size_t pack (T1 &container, size_t offset, const First &first, const Rests &... rest);
 
 
 struct PlaneInfo { // double8字节下无填充
@@ -80,10 +80,12 @@ class XPlaneUdp {
         float getDataref (const std::string &dataRef, float defaultValue = 0, int index = -1);
         float getDataref (int32_t id, float defaultValue = 0);
         void setDataref (const std::string &dataRef, float value, int index = -1);
-        void addDatarefArray (const std::string &dataRef, int length, int32_t freq = 1);
-        void getDatarefArray (const std::string &dataRef, std::vector<float> &container, float defaultValue = 0);
-        void setDatarefArray (const std::string &dataRef, const std::vector<float> &container);
         int32_t datarefName2Id (const std::string &dataRef, int index = -1);
+        void addDatarefArray (const std::string &dataRef, int length, int32_t freq = 1);
+        bool getDatarefArray (const std::string &dataRef, std::vector<float> &container);
+        bool getDatarefArray (int32_t id, std::vector<float> &container);
+        void setDatarefArray (const std::string &dataRef, const std::vector<float> &container);
+        int32_t datarefArrayName2Id (const std::string &dataRef);
         // 基本信息
         void addBasicInfo (int32_t freq = 1);
         PlaneInfo getBasicInfo ();
@@ -92,6 +94,7 @@ class XPlaneUdp {
         std::atomic<int32_t> datarefIndex{0}; // dataref 索引
         std::map<int, float> latestDataref; // 最新 dataref 数据
         boost::bimap<int32_t, std::string> dataref; // 双映射 dataref <索引,名称>
+        std::unordered_map<std::string, int32_t> arrayLength; // 数组长度
         // 基本信息
         std::atomic<bool> timeout{false};
         PlaneInfo latestBasicInfo{};
@@ -106,6 +109,8 @@ class XPlaneUdp {
         std::mutex latestDatarefMutex; // 锁
         std::shared_mutex datarefMutex; // 读写锁
         std::mutex latestBasicInfoMutex; // 锁
+        std::shared_mutex arrayLengthMutex; // 读写锁
+        std::mutex datarefIndexMutex; // 锁
 
         // 网络
         void autoUdpFind ();
@@ -187,24 +192,29 @@ void unpack (const T1 &container, size_t offset, First &first, Rests &... rest) 
  * @brief 打包为字符数据
  * @tparam T1 支持.data()方法的char容器
  * @tparam First,Rests 基本数据类型,string
- *
+ * @return 打包数据量
  */
 template <typename T1, typename First, typename... Rests>
-void pack (T1 &container, size_t offset, const First &first, const Rests &... rest) {
+size_t pack (T1 &container, size_t offset, const First &first, const Rests &... rest) {
     memcpy(container.data() + offset, &first, sizeof(First));
     if constexpr (sizeof...(rest) > 0)
-        pack(container, offset + sizeof(First), rest...);
+        return pack(container, offset + sizeof(First), rest...);
+    else
+        return offset + sizeof(First);
 }
 /**
  * @brief 打包为字符数据
  * @tparam T1 支持.data()方法的char容器
  * @tparam Rests 基本数据类型,string
+ * @return 打包数据量
  */
 template <typename T1, typename... Rests>
-void pack (T1 &container, size_t offset, const std::string &first, const Rests &... rest) {
+size_t pack (T1 &container, size_t offset, const std::string &first, const Rests &... rest) {
     memcpy(container.data() + offset, first.data(), first.size());
     if constexpr (sizeof...(rest) > 0)
-        pack(container, offset + first.size(), rest...);
+        return pack(container, offset + first.size(), rest...);
+    else
+        return offset + first.size();
 }
 
 #endif //XPLANEUDP_HPP
