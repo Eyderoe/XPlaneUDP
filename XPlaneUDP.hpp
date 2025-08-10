@@ -15,12 +15,12 @@
 #include <shared_mutex>
 
 
-namespace Sys = boost::system;
-namespace Asio = boost::asio;
-namespace Ip = Asio::ip;
+namespace sys = boost::system;
+namespace asio = boost::asio;
+namespace ip = asio::ip;
 
-using udpBuffer_t = std::array<char, 1472>;
-using strand_t = Asio::strand<Asio::io_context::executor_type>;
+using UdpBuffer = std::array<char, 1472>;
+using Strand = asio::strand<asio::io_context::executor_type>;
 
 class XPlaneIpNotFound;
 class XPlaneTimeout;
@@ -66,8 +66,8 @@ class XPlaneVersionNotSupported final : public std::exception {
 };
 
 class XPlaneUdp {
-    inline const static std::string multiCastGroup{"239.255.1.1"};
-    static constexpr unsigned short multiCastPort{49707};
+    inline const static std::string MULTI_CAST_GROUP{"239.255.1.1"};
+    static constexpr unsigned short MULTI_CAST_PORT{49707};
     public:
         // 默认
         XPlaneUdp ();
@@ -77,18 +77,18 @@ class XPlaneUdp {
         bool getState ();
         // dataref
         void addDataref (const std::string &dataRef, int32_t freq = 1, int index = -1);
-        float getDataref (const std::string &dataRef, float defaultValue = 0, int index = -1);
-        float getDataref (int32_t id, float defaultValue = 0);
+        std::optional<float> getDataref (const std::string &dataRef, int index = -1);
+        std::optional<float> getDataref (int32_t id);
         void setDataref (const std::string &dataRef, float value, int index = -1);
-        int32_t datarefName2Id (const std::string &dataRef, int index = -1);
+        std::optional<int32_t> datarefName2Id (const std::string &dataRef, int index = -1);
         void addDatarefArray (const std::string &dataRef, int length, int32_t freq = 1);
-        bool getDatarefArray (const std::string &dataRef, std::vector<float> &container);
-        bool getDatarefArray (int32_t id, std::vector<float> &container);
+        std::optional<std::vector<float>> getDatarefArray (const std::string &dataRef);
+        std::optional<std::vector<float>> getDatarefArray (int32_t id);
         void setDatarefArray (const std::string &dataRef, const std::vector<float> &container);
-        int32_t datarefArrayName2Id (const std::string &dataRef);
+        std::optional<int32_t> datarefArrayName2Id (const std::string &dataRef);
         // 基本信息
         void addBasicInfo (int32_t freq = 1);
-        PlaneInfo getBasicInfo ();
+        std::optional<PlaneInfo> getBasicInfo ();
     private:
         // dataref
         std::atomic<int32_t> datarefIndex{0}; // dataref 索引
@@ -96,16 +96,17 @@ class XPlaneUdp {
         boost::bimap<int32_t, std::string> dataref; // 双映射 dataref <索引,名称>
         std::unordered_map<std::string, int32_t> arrayLength; // 数组长度
         // 基本信息
-        std::atomic<bool> timeout{false};
         PlaneInfo latestBasicInfo{};
+        std::atomic<bool> receivedInfo{false};
         // 网络
-        Asio::io_context io_context{}; // 上下文
-        Ip::udp::socket localSocket; // 绑定了本地地址的 socket
-        Ip::udp::endpoint remoteEndpoint; // xp 地址
+        asio::io_context io_context{}; // 上下文
+        ip::udp::socket localSocket; // 绑定了本地地址的 socket
+        ip::udp::endpoint remoteEndpoint; // xp 地址
+        std::atomic<bool> timeout{false};
         // 多线程
         std::thread ioThread;
         std::atomic<bool> runThread{true}; // 线程终止循环
-        strand_t strand_; // udp协调
+        Strand strand_; // udp协调
         std::mutex latestDatarefMutex; // 锁
         std::shared_mutex datarefMutex; // 读写锁
         std::mutex latestBasicInfoMutex; // 锁
@@ -119,7 +120,7 @@ class XPlaneUdp {
         template <typename T>
         void sendUdpData (T buffer);
         template <typename T>
-        size_t receiveUdpData (T &buffer, Ip::udp::socket &socket, Ip::udp::endpoint &sender, int timeout);
+        size_t receiveUdpData (T &buffer, ip::udp::socket &socket, ip::udp::endpoint &sender, int timeout);
 };
 /**
  * @brief 通过 UDP 异步发送数据
@@ -127,9 +128,9 @@ class XPlaneUdp {
  */
 template <typename T>
 void XPlaneUdp::sendUdpData (T buffer) {
-    Asio::post(strand_, [this, copyBuffer=move(buffer)] () {
-        localSocket.async_send_to(Asio::buffer(copyBuffer), remoteEndpoint, Asio::bind_executor(strand_,
-                                      [](const Sys::error_code &, std::size_t)-> void {}));
+    asio::post(strand_, [this, copyBuffer=move(buffer)] () {
+        localSocket.async_send_to(asio::buffer(copyBuffer), remoteEndpoint, asio::bind_executor(strand_,
+                                      [](const sys::error_code &, std::size_t)-> void {}));
     });
     io_context.poll();
 }
@@ -142,23 +143,23 @@ void XPlaneUdp::sendUdpData (T buffer) {
  * @return 接收到的字符数量
  */
 template <typename T>
-size_t XPlaneUdp::receiveUdpData (T &buffer, Ip::udp::socket &socket, Ip::udp::endpoint &sender, const int timeout) {
+size_t XPlaneUdp::receiveUdpData (T &buffer, ip::udp::socket &socket, ip::udp::endpoint &sender, const int timeout) {
     // 初始化
     bool finished{false}, alreadyTimeout{false};
     size_t receivedBytes{0};
-    Asio::steady_timer timer(io_context);
-    Sys::error_code ec;
+    asio::steady_timer timer(io_context);
+    sys::error_code ec;
     timer.expires_after(std::chrono::milliseconds(timeout));
     // 接收
-    timer.async_wait([&](const Sys::error_code &error) {
+    timer.async_wait([&](const sys::error_code &error) {
         if (!error) { // 定时器触发
             alreadyTimeout = true;
             finished = true;
             socket.cancel();
         }
     });
-    Asio::post(strand_, [&] () {
-        socket.async_receive_from(Asio::buffer(buffer), sender, [&](const Sys::error_code &error, const size_t bytes) {
+    asio::post(strand_, [&] () {
+        socket.async_receive_from(asio::buffer(buffer), sender, [&](const sys::error_code &error, const size_t bytes) {
             finished = true;
             receivedBytes = bytes;
             timer.cancel();

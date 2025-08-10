@@ -1,24 +1,24 @@
 #include "XPlaneUDP.hpp"
 
 #ifdef _WIN32
-constexpr bool isWindows = true;
+constexpr bool IS_WIN = true;
 #else
-constexpr bool isWindows = false;
+constexpr bool IS_WIN = false;
 #endif
 
 using namespace std;
 
-constexpr int headerLength{5}; // 指令头部长度 4字母+1空
-const static string datarefGetHead{'R', 'R', 'E', 'F', '\x00'};
-const static string datarefSetHead{'D', 'R', 'E', 'F', '\x00'};
-const static string basicInfoHead{'R', 'P', 'O', 'S', '\x00'};
-const static string beconHead{'B', 'E', 'C', 'N', '\x00'};
+constexpr int HEADER_LENGTH{5}; // 指令头部长度 4字母+1空
+const static string DATAREF_GET_HEAD{'R', 'R', 'E', 'F', '\x00'};
+const static string DATAREF_SET_HEAD{'D', 'R', 'E', 'F', '\x00'};
+const static string BASIC_INFO_HEAD{'R', 'P', 'O', 'S', '\x00'};
+const static string BECON_HEAD{'B', 'E', 'C', 'N', '\x00'};
 
 
 XPlaneUdp::XPlaneUdp (): localSocket(io_context), strand_(io_context.get_executor()) {
     // 绑定xplane
     autoUdpFind();
-    Ip::udp::endpoint local(Ip::udp::v4(), 0);
+    ip::udp::endpoint local(ip::udp::v4(), 0);
     localSocket.open(local.protocol());
     localSocket.bind(local);
     // 保持udp连接
@@ -67,8 +67,8 @@ bool XPlaneUdp::getState () {
  * @brief 开始接收异步接收
  */
 void XPlaneUdp::startReceive () {
-    Ip::udp::endpoint temp{};
-    udpBuffer_t udpReceive{};
+    ip::udp::endpoint temp{};
+    UdpBuffer udpReceive{};
     size_t length;
     while (runThread) {
         try {
@@ -80,8 +80,7 @@ void XPlaneUdp::startReceive () {
         }
         if (length < 5)
             continue;
-        if (timeout)
-            timeout.store(false);
+        timeout.store(false);
         handleReceive({udpReceive.begin(), udpReceive.begin() + length});
     }
 }
@@ -91,22 +90,22 @@ void XPlaneUdp::startReceive () {
  */
 void XPlaneUdp::autoUdpFind () {
     // 创建 UDP 并允许端口复用
-    Ip::udp::socket multicastSocket(io_context);
-    multicastSocket.open(Ip::udp::v4());
-    Asio::socket_base::reuse_address option(true);
+    ip::udp::socket multicastSocket(io_context);
+    multicastSocket.open(ip::udp::v4());
+    asio::socket_base::reuse_address option(true);
     multicastSocket.set_option(option);
     // 绑定至多播
-    Ip::udp::endpoint multicastEndpoint;
-    if (isWindows)
-        multicastEndpoint = Ip::udp::endpoint(Ip::udp::v4(), multiCastPort);
+    ip::udp::endpoint multicastEndpoint;
+    if (IS_WIN)
+        multicastEndpoint = ip::udp::endpoint(ip::udp::v4(), MULTI_CAST_PORT);
     else
-        multicastEndpoint = Ip::udp::endpoint(Ip::make_address(multiCastGroup), multiCastPort);
+        multicastEndpoint = ip::udp::endpoint(ip::make_address(MULTI_CAST_GROUP), MULTI_CAST_PORT);
     multicastSocket.bind(multicastEndpoint);
-    Ip::address_v4 multicast_address = Ip::make_address_v4(multiCastGroup);
-    multicastSocket.set_option(Ip::multicast::join_group(multicast_address));
+    ip::address_v4 multicast_address = ip::make_address_v4(MULTI_CAST_GROUP);
+    multicastSocket.set_option(ip::multicast::join_group(multicast_address));
     // 接收数据
-    udpBuffer_t buffer{};
-    Ip::udp::endpoint senderEndpoint;
+    UdpBuffer buffer{};
+    ip::udp::endpoint senderEndpoint;
     size_t bytesReceived;
     try {
         bytesReceived = receiveUdpData(buffer, multicastSocket, senderEndpoint, 3000);
@@ -118,7 +117,7 @@ void XPlaneUdp::autoUdpFind () {
         cout << hex << setw(2) << setfill('0') << (static_cast<unsigned int>(buffer[i]) & 0xff);
     cout << endl;
     // 解析数据
-    if ((bytesReceived < 5 + 16) || (string_view{buffer.data(), 5} != beconHead)) { // 非xp数据
+    if ((bytesReceived < 5 + 16) || (string_view{buffer.data(), 5} != BECON_HEAD)) { // 非xp数据
         cerr << "Unknown packet from " << senderEndpoint << endl;
         cout << buffer.size() << " bytes" << endl;
         for (const auto &byte : buffer)
@@ -137,7 +136,7 @@ void XPlaneUdp::autoUdpFind () {
             cout << dec << "IP: " << senderEndpoint.address() << ", Port: " << port << ", hostname: " << string_view{
                 buffer.data() + 21, bytesReceived - 24
             } << ", XPlaneVersion: " << xpVer << ", role: " << role << endl;
-            this->remoteEndpoint = Ip::udp::endpoint(Ip::make_address(senderEndpoint.address().to_string()), port);
+            this->remoteEndpoint = ip::udp::endpoint(ip::make_address(senderEndpoint.address().to_string()), port);
         } else {
             cerr << "XPlane Beacon Version not supported: " << mainVer << '.' << minorVer << '.' << software << endl;
             throw XPlaneVersionNotSupported();
@@ -150,17 +149,18 @@ void XPlaneUdp::autoUdpFind () {
  * @param received 接收数据
  */
 void XPlaneUdp::handleReceive (vector<char> received) {
-    if (equal(datarefGetHead.begin(), datarefGetHead.begin() + 4, received.begin())) { // dataref,文档有误实际返回 RREF,
+    if (equal(DATAREF_GET_HEAD.begin(), DATAREF_GET_HEAD.begin() + 4, received.begin())) { // dataref,文档有误实际返回 RREF,
         unique_lock<mutex> lock{latestDatarefMutex};
-        for (int i = headerLength; i < received.size(); i += 8) {
+        for (int i = HEADER_LENGTH; i < received.size(); i += 8) {
             int index;
             float value;
             unpack(received, i, index, value);
             latestDataref[index] = value;
         }
-    } else if (equal(basicInfoHead.begin(), basicInfoHead.begin() + 4, received.begin())) { // 基本信息
+    } else if (equal(BASIC_INFO_HEAD.begin(), BASIC_INFO_HEAD.begin() + 4, received.begin())) { // 基本信息
+        receivedInfo.store(true);
         unique_lock<mutex> lock{latestBasicInfoMutex};
-        unpack(received, headerLength, latestBasicInfo);
+        unpack(received, HEADER_LENGTH, latestBasicInfo);
     }
 }
 
@@ -180,7 +180,7 @@ void XPlaneUdp::addDataref (const string &dataRef, const int32_t freq, const int
     } else
         dataref.insert({datarefIndex, combineName});
     array<char, 413> buffer{};
-    pack(buffer, 0, datarefGetHead, freq, datarefIndex, combineName);
+    pack(buffer, 0, DATAREF_GET_HEAD, freq, datarefIndex, combineName);
     sendUdpData(buffer);
     ++datarefIndex;
 }
@@ -194,7 +194,7 @@ void XPlaneUdp::addDataref (const string &dataRef, const int32_t freq, const int
 void XPlaneUdp::setDataref (const std::string &dataRef, const float value, const int index) {
     array<char, 509> buffer{};
     const string combineName{(index != -1) ? (dataRef + '[' + to_string(index) + ']') : dataRef};
-    pack(buffer, 0, datarefSetHead, value, combineName, '\x00');
+    pack(buffer, 0, DATAREF_SET_HEAD, value, combineName, '\x00');
     sendUdpData(buffer);
 }
 
@@ -230,7 +230,7 @@ void XPlaneUdp::addDatarefArray (const std::string &dataRef, const int length, c
     for (int i = 1; i <= length; ++i) {
         auto datarefWithIndex = base + to_string(i - 1) + ']';
         dataref.insert({datarefIndex + i, datarefWithIndex});
-        pack(buffer, 0, datarefGetHead, freq, datarefIndex + i, datarefWithIndex);
+        pack(buffer, 0, DATAREF_GET_HEAD, freq, datarefIndex + i, datarefWithIndex);
         sendUdpData(buffer);
     }
     datarefIndex += (length + 1);
@@ -239,43 +239,42 @@ void XPlaneUdp::addDatarefArray (const std::string &dataRef, const int length, c
 /**
  * @brief 获取某组 dataref 最新值
  * @param dataRef dataref 名称
- * @param container 存放数据的容器
- * @return 是否成功获取
+ * @return 数据组
  */
-bool XPlaneUdp::getDatarefArray (const std::string &dataRef, std::vector<float> &container) {
-    int32_t id = datarefArrayName2Id(dataRef);
+optional<vector<float>> XPlaneUdp::getDatarefArray (const std::string &dataRef) {
+    const auto id = datarefArrayName2Id(dataRef);
+    if (!id.has_value())
+        return nullopt;
     shared_lock<shared_mutex> lock{arrayLengthMutex};
     const auto it = arrayLength.find(dataRef);
-    if ((id == -1) || (it == arrayLength.end()))
-        return false;
-    int32_t length = it->second;
+    if (it == arrayLength.end())
+        return nullopt;
+    const int32_t length = it->second;
     lock.unlock();
-    ++id;
+    vector<float> container(length);
+    const int32_t startPos = id.value() + 1; // 本名占了一个
     unique_lock<mutex> locky{latestDatarefMutex};
-    for (int i = 0; i < (container.size() < length ? container.size() : length); ++i) {
-        const auto that = latestDataref.find(id + i);
+    for (int i = 0; i < length; ++i) {
+        const auto that = latestDataref.find(startPos + i);
         if (that == latestDataref.end())
-            return false;
+            return nullopt;
         container[i] = that->second;
     }
-    return true;
+    return container;
 }
 
 /**
  * @brief 获取某组 dataref 最新值
  * @param id dataref 索引
- * @param container 存放数据的容器
- * @return 是否成功获取
+ * @return 数据组
  */
-bool XPlaneUdp::getDatarefArray (const int32_t id, std::vector<float> &container) {
+optional<vector<float>> XPlaneUdp::getDatarefArray (const int32_t id) {
     shared_lock<shared_mutex> lock{datarefMutex};
     const auto it = dataref.left.find(id);
     if (it == dataref.left.end())
-        return false;
-    else {
-        lock.unlock();
-        return getDatarefArray(it->second, container);
-    }
+        return nullopt;
+    lock.unlock();
+    return getDatarefArray(it->second);
 }
 
 /**
@@ -286,7 +285,7 @@ bool XPlaneUdp::getDatarefArray (const int32_t id, std::vector<float> &container
 void XPlaneUdp::setDatarefArray (const std::string &dataRef, const std::vector<float> &container) {
     array<char, 509> buffer{};
     for (int i = 0; i < container.size(); ++i) {
-        pack(buffer, 0, datarefSetHead, container[i], dataRef + '[' + to_string(i) + ']', '\x00');
+        pack(buffer, 0, DATAREF_SET_HEAD, container[i], dataRef + '[' + to_string(i) + ']', '\x00');
         sendUdpData(buffer);
     }
 }
@@ -294,9 +293,9 @@ void XPlaneUdp::setDatarefArray (const std::string &dataRef, const std::vector<f
 /**
  * @brief 通过 dataref 名称索引唯一 id
  * @param dataRef dataref 名称
- * @return 唯一 id, 未找到返回 -1
+ * @return 唯一 id
  */
-int32_t XPlaneUdp::datarefArrayName2Id (const std::string &dataRef) {
+optional<int32_t> XPlaneUdp::datarefArrayName2Id (const std::string &dataRef) {
     return datarefName2Id(dataRef);
 }
 
@@ -304,8 +303,8 @@ int32_t XPlaneUdp::datarefArrayName2Id (const std::string &dataRef) {
  * @brief 开始接收基本信息
  * @param freq 接收频率
  */
-void XPlaneUdp::addBasicInfo (int32_t freq) {
-    const string sentence = basicInfoHead + to_string(freq) + '\x00';
+void XPlaneUdp::addBasicInfo (const int32_t freq) {
+    const string sentence = BASIC_INFO_HEAD + to_string(freq) + '\x00';
     vector<char> buffer(sentence.size());
     pack(buffer, 0, sentence);
     sendUdpData(move(buffer));
@@ -315,7 +314,9 @@ void XPlaneUdp::addBasicInfo (int32_t freq) {
  * @brief 获取基本信息最新值
  * @return 基本信息
  */
-PlaneInfo XPlaneUdp::getBasicInfo () {
+optional<PlaneInfo> XPlaneUdp::getBasicInfo () {
+    if (!receivedInfo)
+        return nullopt;
     unique_lock<mutex> lock(latestBasicInfoMutex);
     return latestBasicInfo;
 }
@@ -323,28 +324,25 @@ PlaneInfo XPlaneUdp::getBasicInfo () {
 /**
  * @brief 获取某个 dataref 最新值
  * @param dataRef dataref 名称
- * @param defaultValue 不存在时的默认值
  * @param index 目标为数组时的索引
  * @return 最新值
  */
-float XPlaneUdp::getDataref (const std::string &dataRef, const float defaultValue, int index) {
-    const int32_t datarefIndex = datarefName2Id(dataRef, index);
-    if (datarefIndex == -1)
-        return defaultValue;
-    return getDataref(datarefIndex, defaultValue);
+optional<float> XPlaneUdp::getDataref (const std::string &dataRef, const int index) {
+    if (const auto datarefIndex = datarefName2Id(dataRef, index); datarefIndex.has_value())
+        return getDataref(datarefIndex.value());
+    return nullopt;
 }
 
 /**
  * @brief 获取某个 dataref 最新值
  * @param id dataref 索引
- * @param defaultValue 不存在时的默认值
  * @return 最新值
  */
-float XPlaneUdp::getDataref (const int32_t id, const float defaultValue) {
+optional<float> XPlaneUdp::getDataref (const int32_t id) {
     unique_lock<mutex> lock{latestDatarefMutex};
     const auto it = latestDataref.find(id);
     if (it == latestDataref.end())
-        return defaultValue;
+        return nullopt;
     return it->second;
 }
 
@@ -352,13 +350,13 @@ float XPlaneUdp::getDataref (const int32_t id, const float defaultValue) {
  * @brief 通过 dataref 名称索引唯一 id
  * @param dataRef dataref 名称
  * @param index 目标为数组时的索引
- * @return 唯一 id, 未找到返回 -1
+ * @return 唯一 id
  */
-int32_t XPlaneUdp::datarefName2Id (const std::string &dataRef, int index) {
+optional<int32_t> XPlaneUdp::datarefName2Id (const std::string &dataRef, const int index) {
     const string combineName{(index != -1) ? (dataRef + '[' + to_string(index) + ']') : dataRef};
     shared_lock<shared_mutex> lock{datarefMutex};
     const auto it = dataref.right.find(combineName);
     if (it == dataref.right.end())
-        return -1;
+        return nullopt;
     return it->get_left();
 }
