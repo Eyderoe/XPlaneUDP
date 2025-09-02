@@ -184,6 +184,11 @@ size_t XPlaneUdp::receiveUdpData (T &buffer, ip::udp::socket &socket, ip::udp::e
  */
 template <typename T1, typename First, typename... Rests>
 void unpack (const T1 &container, size_t offset, First &first, Rests &... rest) {
+    if (offset + sizeof(First) > container.size()) {
+        throw std::out_of_range("Buffer overflow in unpack: offset " + std::to_string(offset) + 
+                               " + size " + std::to_string(sizeof(First)) + 
+                               " > container size " + std::to_string(container.size()));
+    }
     memcpy(&first, container.data() + offset, sizeof(First));
     if constexpr (sizeof...(rest) > 0) // 编译期确定哪些函数特化, 不用写终止函数(空包)
         unpack(container, offset + sizeof(First), rest...);
@@ -197,6 +202,11 @@ void unpack (const T1 &container, size_t offset, First &first, Rests &... rest) 
  */
 template <typename T1, typename First, typename... Rests>
 size_t pack (T1 &container, size_t offset, const First &first, const Rests &... rest) {
+    if (offset + sizeof(First) > container.size()) {
+        throw std::out_of_range("Buffer overflow in pack: offset " + std::to_string(offset) + 
+                               " + size " + std::to_string(sizeof(First)) + 
+                               " > container size " + std::to_string(container.size()));
+    }
     memcpy(container.data() + offset, &first, sizeof(First));
     if constexpr (sizeof...(rest) > 0)
         return pack(container, offset + sizeof(First), rest...);
@@ -211,6 +221,11 @@ size_t pack (T1 &container, size_t offset, const First &first, const Rests &... 
  */
 template <typename T1, typename... Rests>
 size_t pack (T1 &container, size_t offset, const std::string &first, const Rests &... rest) {
+    if (offset + first.size() > container.size()) {
+        throw std::out_of_range("Buffer overflow in pack (string): offset " + std::to_string(offset) + 
+                               " + string size " + std::to_string(first.size()) + 
+                               " > container size " + std::to_string(container.size()));
+    }
     memcpy(container.data() + offset, first.data(), first.size());
     if constexpr (sizeof...(rest) > 0)
         return pack(container, offset + first.size(), rest...);

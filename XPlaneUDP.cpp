@@ -16,17 +16,22 @@ const static string BECON_HEAD{'B', 'E', 'C', 'N', '\x00'};
 
 
 XPlaneUdp::XPlaneUdp (): localSocket(io_context), strand_(io_context.get_executor()) {
+    // 确保runThread在线程启动前初始化
+    runThread.store(true);
+    
     // 绑定xplane
     autoUdpFind();
     ip::udp::endpoint local(ip::udp::v4(), 0);
     localSocket.open(local.protocol());
     localSocket.bind(local);
-    // 保持udp连接
+    
+    // 启动接收线程
+    ioThread = thread([this] () { startReceive(); });
+    
+    // 保持udp连接 (moved after thread start to avoid race)
     addDataref("sim/network/misc/network_time_sec");
     io_context.reset();
     io_context.run();
-    // 启动接收
-    ioThread = thread([this] () { startReceive(); });
 }
 
 XPlaneUdp::~XPlaneUdp () {
@@ -42,17 +47,27 @@ void XPlaneUdp::close () {
     localSocket.cancel();
     if (ioThread.joinable())
         ioThread.join();
-    // 停止udp接收
-    shared_lock<shared_mutex> lock{datarefMutex};
+    
+    // 获取所有dataref名称的副本，避免在锁内调用其他函数
     vector<string> allDatarefs;
-    for (auto &item : dataref.right)
-        allDatarefs.emplace_back(item.first);
-    lock.unlock();
-    addBasicInfo(0);
-    addDataref("inop");
-    for (auto &item : allDatarefs)
-        addDataref(item, 0);
-    io_context.poll();
+    {
+        shared_lock<shared_mutex> lock{datarefMutex};
+        allDatarefs.reserve(dataref.right.size());
+        for (auto &item : dataref.right)
+            allDatarefs.emplace_back(item.first);
+    } // 锁在这里释放
+    
+    // 现在可以安全地调用其他函数，不会造成死锁
+    try {
+        addBasicInfo(0);
+        addDataref("inop");
+        for (auto &item : allDatarefs)
+            addDataref(item, 0);
+        io_context.poll();
+    } catch (const std::exception& e) {
+        // 在关闭过程中忽略错误，避免异常导致资源未释放
+        std::cerr << "Error during close: " << e.what() << std::endl;
+    }
 }
 
 
@@ -149,18 +164,53 @@ void XPlaneUdp::autoUdpFind () {
  * @param received 接收数据
  */
 void XPlaneUdp::handleReceive (vector<char> received) {
-    if (equal(DATAREF_GET_HEAD.begin(), DATAREF_GET_HEAD.begin() + 4, received.begin())) { // dataref,文档有误实际返回 RREF,
-        unique_lock<mutex> lock{latestDatarefMutex};
-        for (int i = HEADER_LENGTH; i < received.size(); i += 8) {
-            int index;
-            float value;
-            unpack(received, i, index, value);
-            latestDataref[index] = value;
+    // 基本长度验证
+    if (received.size() < HEADER_LENGTH) {
+        std::cerr << "Received packet too short: " << received.size() << " bytes" << std::endl;
+        return;
+    }
+    
+    try {
+        if (equal(DATAREF_GET_HEAD.begin(), DATAREF_GET_HEAD.begin() + 4, received.begin())) { // dataref,文档有误实际返回 RREF,
+            // 验证数据包长度是否合理
+            if ((received.size() - HEADER_LENGTH) % 8 != 0) {
+                std::cerr << "Invalid dataref packet size: " << received.size() << std::endl;
+                return;
+            }
+            
+            unique_lock<mutex> lock{latestDatarefMutex};
+            for (int i = HEADER_LENGTH; i < received.size(); i += 8) {
+                // 确保有足够的数据可以解包
+                if (i + 8 > received.size()) {
+                    std::cerr << "Incomplete dataref entry at offset " << i << std::endl;
+                    break;
+                }
+                
+                int index;
+                float value;
+                unpack(received, i, index, value);
+                
+                // 验证索引是否合理
+                if (index < 0 || index > 100000) { // 合理的索引范围
+                    std::cerr << "Invalid dataref index: " << index << std::endl;
+                    continue;
+                }
+                
+                latestDataref[index] = value;
+            }
+        } else if (equal(BASIC_INFO_HEAD.begin(), BASIC_INFO_HEAD.begin() + 4, received.begin())) { // 基本信息
+            // 验证基本信息包的长度
+            if (received.size() < HEADER_LENGTH + sizeof(PlaneInfo)) {
+                std::cerr << "Invalid basic info packet size: " << received.size() << std::endl;
+                return;
+            }
+            
+            receivedInfo.store(true);
+            unique_lock<mutex> lock{latestBasicInfoMutex};
+            unpack(received, HEADER_LENGTH, latestBasicInfo);
         }
-    } else if (equal(BASIC_INFO_HEAD.begin(), BASIC_INFO_HEAD.begin() + 4, received.begin())) { // 基本信息
-        receivedInfo.store(true);
-        unique_lock<mutex> lock{latestBasicInfoMutex};
-        unpack(received, HEADER_LENGTH, latestBasicInfo);
+    } catch (const std::exception& e) {
+        std::cerr << "Error processing received data: " << e.what() << std::endl;
     }
 }
 
@@ -173,6 +223,13 @@ void XPlaneUdp::handleReceive (vector<char> received) {
 void XPlaneUdp::addDataref (const string &dataRef, const int32_t freq, const int index) {
     string combineName{(index != -1) ? (dataRef + '[' + to_string(index) + ']') : dataRef};
     unique_lock<mutex> locky(datarefIndexMutex);
+    
+    // 检查整数溢出
+    if (datarefIndex >= INT32_MAX) {
+        throw std::overflow_error("Dataref index overflow: current index " + 
+                                 std::to_string(datarefIndex) + " at maximum");
+    }
+    
     if (unique_lock<shared_mutex> lock{datarefMutex}; freq == 0) {
         dataref.right.erase(combineName);
         if (dataref.size() == 1) // 始终保留一个dataref维持udp通信
@@ -225,6 +282,17 @@ void XPlaneUdp::addDatarefArray (const std::string &dataRef, const int length, c
     }
     unique_lock<mutex> lock{datarefIndexMutex};
     unique_lock<shared_mutex> locky{datarefMutex};
+    
+    // 检查整数溢出
+    if (length < 0) {
+        throw std::invalid_argument("Array length cannot be negative: " + std::to_string(length));
+    }
+    if (datarefIndex > INT32_MAX - length - 1) {
+        throw std::overflow_error("Dataref index overflow: current index " + 
+                                 std::to_string(datarefIndex) + " + length " + 
+                                 std::to_string(length) + " exceeds INT32_MAX");
+    }
+    
     array<char, 413> buffer{};
     dataref.insert({datarefIndex, dataRef});
     for (int i = 1; i <= length; ++i) {
