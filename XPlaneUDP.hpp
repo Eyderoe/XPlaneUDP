@@ -114,6 +114,7 @@ class XPlaneUdp {
             bool isArray; // 是否是数组
         };
 
+        bool closed {false};
         // 数据
         std::vector<DatarefInfo> dataRefs;
         std::vector<float> values;
@@ -245,9 +246,9 @@ bool XPlaneUdp::getDataref (const DatarefIndex &dataref, T &container, float def
 template <Container T>
 void XPlaneUdp::setDataref (const std::string &dataref, const T &value) {
     for (int i = 0; i < value.size(); ++i) {
-        const size_t bufferSize = packSize(0, DATAREF_SET_HEAD, value[i], std::format("{}[{}]", dataref, i), '\x00');
+        const size_t bufferSize = packSize(0, DATAREF_SET_HEAD, value.at(i), std::format("{}[{}]", dataref, i), '\x00');
         const auto buffer = BufferPool::getBuffer(bufferSize);
-        pack(*buffer, 0, DATAREF_SET_HEAD, value[i], std::format("{}[{}]", dataref, i), '\x00');
+        pack(*buffer, 0, DATAREF_SET_HEAD, value.at(i), std::format("{}[{}]", dataref, i), '\x00');
         sendData(buffer, 509);
     }
 }

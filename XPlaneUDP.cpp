@@ -104,7 +104,6 @@ void XPlaneUdp::stop () {
  * @brief 彻底关闭 UDP
  */
 void XPlaneUdp::close () {
-    static bool closed = false;
     if (closed)
         return;
     closed = true;

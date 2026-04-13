@@ -24,8 +24,12 @@ int main () {
     XPlaneUdp::PlaneInfo info{};
     bool rev{};
     const std::string set{"sim/cockpit/radios/com1_freq_hz"};
+    int timer{};
     while (true) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        timer++;
+        if (timer > 5)
+            break;
         // 获取基本信息
         xp.getPlaneInfo(info);
         xp.getDataref(time, timeValue);
