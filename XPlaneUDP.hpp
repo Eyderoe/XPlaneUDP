@@ -27,10 +27,10 @@ concept CharArray = requires(T contain) {
 };
 
 constexpr int HEADER_LENGTH{5}; // 指令头部长度 4字母+1空
-const static std::string DATAREF_GET_HEAD{'R', 'R', 'E', 'F', '\x00'};
-const static std::string DATAREF_SET_HEAD{'D', 'R', 'E', 'F', '\x00'};
-const static std::string BASIC_INFO_HEAD{'R', 'P', 'O', 'S', '\x00'};
-const static std::string BECON_HEAD{'B', 'E', 'C', 'N', '\x00'};
+static const std::string DATAREF_GET_HEAD{'R', 'R', 'E', 'F', '\x00'};
+static const std::string DATAREF_SET_HEAD{'D', 'R', 'E', 'F', '\x00'};
+static const std::string BASIC_INFO_HEAD{'R', 'P', 'O', 'S', '\x00'};
+static const std::string BECON_HEAD{'B', 'E', 'C', 'N', '\x00'};
 
 namespace sys = boost::system;
 namespace asio = boost::asio;
@@ -58,7 +58,6 @@ class BufferPool {
     public:
         static std::shared_ptr<std::array<char, 1472>> getBuffer (size_t length);
     private:
-        boost::pool_allocator<BufferPro> allocator;
         static void recycleBuffer (BufferPro *buffer);
 };
 
@@ -98,7 +97,7 @@ class XPlaneUdp {
         bool getDataref (const DatarefIndex &dataref, float &value, float defaultValue = 0) const;
         template <Container T>
         bool getDataref (const DatarefIndex &dataref, T &container, float defaultValue = 0);
-        void changeDatarefFreq (const DatarefIndex &dataref, float freq);
+        void changeDatarefFreq (const DatarefIndex &dataref, int32_t freq);
         void setDataref (const std::string &dataref, float value, int index = -1);
         template <Container T>
         void setDataref (const std::string &dataref, const T &value);
@@ -114,14 +113,13 @@ class XPlaneUdp {
             bool isArray; // 是否是数组
         };
 
-        bool closed {false};
+        bool closed{false};
         // 数据
         std::vector<DatarefInfo> dataRefs;
         std::vector<float> values;
         boost::dynamic_bitset<> space;
         std::unordered_map<std::string, size_t> exist;
         PlaneInfo info{.track = -999};
-        BufferPool pool{};
         mutable std::shared_mutex dataMutex;
         // 网络
         bool autoReconnect; // 自动重连
@@ -131,7 +129,7 @@ class XPlaneUdp {
         ip::udp::socket xpSocket{io_context}; // xp通信
         ip::udp::endpoint xpEndpoint; // xp端口
         std::thread worker; // io_content驱动
-        int infoFreq{}; // 基本信息频率
+        int planeInfoFreq{}; // 基本信息频率
         // 回调
         bool state{false}; // xp状态
         std::function<void  (bool)> callback{nullptr}; // 回调
