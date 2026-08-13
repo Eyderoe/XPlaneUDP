@@ -9,6 +9,7 @@
 #include <ranges>
 #include <memory>
 #include <array>
+#include <atomic>
 #include <shared_mutex>
 #include <boost/pool/pool_alloc.hpp>
 
@@ -113,7 +114,7 @@ class XPlaneUdp {
             bool isArray; // 是否是数组
         };
 
-        bool closed{false};
+        std::atomic<bool> closed{false};
         // 数据
         std::vector<DatarefInfo> dataRefs;
         std::vector<float> values;
@@ -131,7 +132,7 @@ class XPlaneUdp {
         std::thread worker; // io_content驱动
         int planeInfoFreq{}; // 基本信息频率
         // 回调
-        bool state{false}; // xp状态
+        std::atomic<bool> state{false}; // xp状态
         std::function<void  (bool)> callback{nullptr}; // 回调
 
         void setState (bool newState);

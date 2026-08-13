@@ -6,7 +6,7 @@ constexpr bool IS_WIN = true;
 constexpr bool IS_WIN = false;
 #endif
 
-static const std::string MULTI_CAST_GROUP{"239.255.1.1"};
+inline const std::string MULTI_CAST_GROUP{"239.255.1.1"};
 static constexpr unsigned short MULTI_CAST_PORT{49707};
 
 
@@ -105,21 +105,20 @@ void XPlaneUdp::stop () {
  * @brief 彻底关闭 UDP
  */
 void XPlaneUdp::close () {
-    if (callback)
-        setState(false);
-    if (closed)
+    if (closed.exchange(true))
         return;
-    closed = true;
-    if (xpSocket.is_open()) {
+    // 先取消所有挂起的异步操作
+    if (xpSocket.is_open())
         xpSocket.cancel();
-        xpSocket.close();
-    }
     multicastSocket.cancel();
-    multicastSocket.close();
     workGuard.reset();
-    io_context.stop();
     if (worker.joinable())
         worker.join();
+    if (xpSocket.is_open())
+        xpSocket.close();
+    multicastSocket.close();
+    if (state.exchange(false) && callback)
+        callback(false);
 }
 
 /**
@@ -263,11 +262,11 @@ void XPlaneUdp::getPlaneInfo (PlaneInfo &infoDst) const {
  * @param newState 新状态
  */
 void XPlaneUdp::setState (const bool newState) {
-    if (newState == state)
+    if (newState == state.load())
         return;
     if (newState && autoReconnect)
         reconnect();
-    state = newState;
+    state.store(newState);
     if (callback)
         callback(newState);
 }
