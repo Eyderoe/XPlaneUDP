@@ -79,7 +79,7 @@ void XPlaneUdp::reconnect (const bool del) {
             continue;
         for (int i = start; i <= end; ++i) {
             std::string combine = isArray ? std::format("{}[{}]", name, i - start) : name;
-            const size_t size = packSize(0, DATAREF_GET_HEAD, freq, i, combine);
+            const size_t size = packSize(0, DATAREF_GET_HEAD, del ? 0 : freq, i, combine);
             auto buffer = BufferPool::getBuffer(size);
             pack(*buffer, 0, DATAREF_GET_HEAD, del ? 0 : freq, i, combine);
             sendData(buffer, 413);
