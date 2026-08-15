@@ -11,17 +11,21 @@
 #include <array>
 #include <atomic>
 #include <shared_mutex>
+#include <mutex>
+#include <queue>
 #include <boost/pool/pool_alloc.hpp>
 
 
 template <typename T>
 concept Container = std::ranges::random_access_range<T> &&
         std::ranges::sized_range<T> &&
-        std::is_assignable_v<std::ranges::range_reference_t<T>, float> && requires(T contain) {
+        std::is_assignable_v<std::ranges::range_reference_t<T>, float> && requires(T contain)
+        {
             contain.size();
         } ;
 template <typename T>
-concept CharArray = requires(T contain) {
+concept CharArray = requires(T contain)
+{
     requires std::is_same_v<typename T::value_type, char> ||
     std::is_same_v<typename T::value_type, std::byte> ||
     std::is_same_v<typename T::value_type, uint8_t>;
@@ -53,11 +57,9 @@ void unpack (const CharList &container, size_t offset, First &first, Rests &... 
 class BufferPool {
     struct BufferPro {
         std::array<char, 1472> data{};
-        size_t length;
-        BufferPro () : length(0) { std::memset(data.data(), 0x00, data.size()); }
     };
     public:
-        static std::shared_ptr<std::array<char, 1472>> getBuffer (size_t length);
+        static std::shared_ptr<std::array<char, 1472>> getBuffer ();
     private:
         static void recycleBuffer (BufferPro *buffer);
 };
@@ -113,6 +115,10 @@ class XPlaneUdp {
             bool available; // 是否可用
             bool isArray; // 是否是数组
         };
+        struct QueueData {
+            std::shared_ptr<std::array<char, 1472>> data;
+            size_t size;
+        };
 
         std::atomic<bool> closed{false};
         // 数据
@@ -122,10 +128,14 @@ class XPlaneUdp {
         std::unordered_map<std::string, size_t> exist;
         PlaneInfo info{.track = -999};
         mutable std::shared_mutex dataMutex;
+        std::queue<QueueData> queue;
+        std::mutex queueMutex; // 发送队列互斥锁
+        bool flushPending{false}; // 是否已有定时器在运行
         // 网络
         bool autoReconnect; // 自动重连
         asio::io_context io_context{}; // 上下文
         asio::executor_work_guard<asio::io_context::executor_type> workGuard;
+        asio::steady_timer flushTimer{io_context}; // 100ms批量发送定时器
         ip::udp::socket multicastSocket{io_context}; // 监听多播
         ip::udp::socket xpSocket{io_context}; // xp通信
         ip::udp::endpoint xpEndpoint; // xp端口
@@ -141,6 +151,7 @@ class XPlaneUdp {
         asio::awaitable<void> detect ();
         void sendData (const std::shared_ptr<std::array<char, 1472>> &data, size_t size);
         asio::awaitable<void> send (std::shared_ptr<std::array<char, 1472>> data, size_t size);
+        asio::awaitable<void> flushQueue ();
         void receiveData ();
         asio::awaitable<void> receive ();
         void receiveDataProcess (const std::shared_ptr<std::array<char, 1472>> &data, size_t size,
@@ -245,8 +256,7 @@ bool XPlaneUdp::getDataref (const DatarefIndex &dataref, T &container, float def
 template <Container T>
 void XPlaneUdp::setDataref (const std::string &dataref, const T &value) {
     for (int i = 0; i < value.size(); ++i) {
-        const size_t bufferSize = packSize(0, DATAREF_SET_HEAD, value.at(i), std::format("{}[{}]", dataref, i), '\x00');
-        const auto buffer = BufferPool::getBuffer(bufferSize);
+        const auto buffer = BufferPool::getBuffer();
         pack(*buffer, 0, DATAREF_SET_HEAD, value.at(i), std::format("{}[{}]", dataref, i), '\x00');
         sendData(buffer, 509);
     }
